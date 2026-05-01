@@ -10,6 +10,7 @@ export interface Env {
   JIRA_EMAIL: string;
   JIRA_API_TOKEN: string;
   JIRA_SPRINT_FIELD?: string;
+  ALLOWED_RUN_IPS?: string;
   MOVE_FAILED?: string;
   DRY_RUN?: string;
 }
@@ -51,6 +52,9 @@ export default {
     const url = new URL(request.url);
     if (url.pathname !== "/run") {
       return new Response("OK");
+    }
+    if (!isAllowedRunRequest(request, env)) {
+      return Response.json({ error: "Forbidden" }, { status: 403 });
     }
 
     const result = await runDailyUpdate(env);
@@ -426,4 +430,18 @@ function decodeXml(value: string): string {
     .replace(/&quot;/g, "\"")
     .replace(/&apos;/g, "'")
     .replace(/&amp;/g, "&");
+}
+
+function isAllowedRunRequest(request: Request, env: Env): boolean {
+  const allowedIps = (env.ALLOWED_RUN_IPS || "")
+    .split(",")
+    .map((ip) => ip.trim())
+    .filter(Boolean);
+
+  if (allowedIps.length === 0) {
+    return false;
+  }
+
+  const clientIp = request.headers.get("CF-Connecting-IP");
+  return Boolean(clientIp && allowedIps.includes(clientIp));
 }

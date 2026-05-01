@@ -65,9 +65,19 @@ npx wrangler r2 object put jira-updates/update/jira_update-sample.json --file .\
 
 ## Manual Run
 
+手動実行 `/run` は `ALLOWED_RUN_IPS` に設定したIPからのみ実行できます。
+
+`wrangler.jsonc` 例:
+
+```jsonc
+"ALLOWED_RUN_IPS": "203.0.113.10,198.51.100.20"
+```
+
 ```powershell
 Invoke-WebRequest https://jira-daily-updater.maeda-kiyotaka.workers.dev/run
 ```
+
+`ALLOWED_RUN_IPS` が空の場合、`/run` は403になります。Cron実行には影響しません。
 
 ## Deploy
 

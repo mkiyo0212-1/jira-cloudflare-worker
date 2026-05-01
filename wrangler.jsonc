@@ -18,7 +18,7 @@
 		"JIRA_BASE_URL": "https://ana-x.atlassian.net",
 		"JIRA_EMAIL": "ki.maeda@ana-x.co.jp",
 		"JIRA_SPRINT_FIELD": "customfield_10020",
-		"ALLOWED_RUN_IPS": "153.124.178.193",
+		"ALLOWED_RUN_IPS": "153.124.178.193,240d:1a:9f4:8300::3",
 		"MOVE_FAILED": "true"
 	}
 }

@@ -45,7 +45,7 @@ interface RunResult {
 
 export default {
   async scheduled(_controller: ScheduledController, env: Env, ctx: ExecutionContext): Promise<void> {
-    ctx.waitUntil(runDailyUpdate(env));
+    ctx.waitUntil(runDailyUpdate(env).catch((error) => console.error("Scheduled run failed", error)));
   },
 
   async fetch(request: Request, env: Env): Promise<Response> {
@@ -57,8 +57,14 @@ export default {
       return Response.json({ error: "Forbidden" }, { status: 403 });
     }
 
-    const result = await runDailyUpdate(env);
-    return Response.json(result, { status: result.failed.length === 0 ? 200 : 207 });
+    try {
+      const result = await runDailyUpdate(env);
+      return Response.json(result, { status: result.failed.length === 0 ? 200 : 207 });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      console.error("Manual run failed", error);
+      return Response.json({ error: message }, { status: 500 });
+    }
   },
 };
 

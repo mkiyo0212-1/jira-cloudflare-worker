@@ -3,6 +3,9 @@
 	"account_id": "2454599fdfa02c70203e0b8b384b43a8",
 	"main": "src/index.ts",
 	"compatibility_date": "2026-05-01",
+	"compatibility_flags": [
+		"nodejs_compat"
+	],
 	"vars": {
 		"R2_ACCOUNT_ID": "2454599fdfa02c70203e0b8b384b43a8",
 		"R2_BUCKET_NAME": "jira-updates",

@@ -2,6 +2,8 @@
 
 Cloudflare Workers CronでR2上のJira更新JSONを読み、Jira APIへ反映する構成です。
 
+このWorkerはR2 Bindingを使わず、R2のS3互換APIを直接呼びます。Cloudflare Dashboard / WranglerでR2 Binding追加時に `code: 10136` が出る環境でも動かせるようにしています。
+
 ## Schedule
 
 `wrangler.jsonc` のCronは `0 0 * * *` です。Cloudflare CronはUTCなので、日本時間09:00に実行されます。
@@ -16,7 +18,7 @@ done/yyyy-mm-dd/*.json     処理成功済みJSON
 failed/yyyy-mm-dd/*.json   処理失敗JSON
 ```
 
-成功したJSONは `done/` へ移動し、`update/` から削除します。失敗したJSONは `failed/` へ移動し、エラーの短い内容をR2 custom metadataに保存します。
+成功したJSONは `done/` へ移動し、`update/` から削除します。失敗したJSONは `failed/` へ移動します。
 
 ## Setup
 
@@ -26,34 +28,30 @@ R2 bucketを作成します。
 npx wrangler r2 bucket create jira-updates
 ```
 
-R2 bindingをCloudflare Dashboardから手動追加します。
+R2 API tokenを作成します。
 
 ```text
-Workers & Pages
-→ jira-daily-updater
-→ Settings
-→ Bindings
-→ Add binding
-→ R2 bucket
+Cloudflare Dashboard
+→ R2 Object Storage
+→ API
+→ Manage API tokens
+→ Create API token
 ```
 
-設定値:
+権限は `Object Read & Write`、対象bucketは `jira-updates` を指定します。作成後に表示される `Access Key ID` と `Secret Access Key` を控えます。
 
-```text
-Variable name: JIRA_UPDATE_BUCKET
-R2 bucket: jira-updates
-```
-
-この環境ではWranglerからR2 bindingを作ると `code: 10136` が出るため、`wrangler.jsonc` にはR2 bindingを記載していません。Dashboardで追加したbindingを使います。
-
-Jira API tokenをSecretに登録します。
+Secretsを登録します。
 
 ```powershell
 npx wrangler secret put JIRA_API_TOKEN
+npx wrangler secret put R2_ACCESS_KEY_ID
+npx wrangler secret put R2_SECRET_ACCESS_KEY
 ```
 
-`wrangler.jsonc` の以下を実値に変更します。
+`wrangler.jsonc` の以下を確認します。
 
+- `R2_ACCOUNT_ID`
+- `R2_BUCKET_NAME`
 - `JIRA_EMAIL`
 - `JIRA_SPRINT_FIELD`
 
@@ -67,16 +65,8 @@ npx wrangler r2 object put jira-updates/update/jira_update-sample.json --file .\
 
 ## Manual Run
 
-ローカル起動:
-
 ```powershell
-npm run dev
-```
-
-別ターミナルから:
-
-```powershell
-Invoke-WebRequest http://localhost:8787/run
+Invoke-WebRequest https://jira-daily-updater.maeda-kiyotaka.workers.dev/run
 ```
 
 ## Deploy

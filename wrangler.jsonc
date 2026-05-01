@@ -11,8 +11,7 @@
 	"r2_buckets": [
 		{
 			"binding": "JIRA_UPDATE_BUCKET",
-			"bucket_name": "jira-updates",
-			"remote": true
+			"bucket_name": "jira-updates"
 		}
 	],
 	"vars": {

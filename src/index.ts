@@ -1,3 +1,11 @@
+import {
+  DeleteObjectCommand,
+  GetObjectCommand,
+  ListObjectsV2Command,
+  PutObjectCommand,
+  S3Client,
+} from "@aws-sdk/client-s3";
+
 export interface Env {
   R2_ACCOUNT_ID: string;
   R2_BUCKET_NAME: string;
@@ -69,19 +77,20 @@ export default {
 };
 
 async function runDailyUpdate(env: Env): Promise<RunResult> {
+  const r2 = r2Client(env);
   const prefix = normalizePrefix(env.R2_UPDATE_PREFIX || "update/");
-  const objects = await listAllObjects(env, prefix);
+  const objects = await listAllObjects(r2, env, prefix);
   const jsonObjects = objects.filter((object) => object.key.endsWith(".json"));
   const processed: string[] = [];
   const failed: Array<{ key: string; error: string }> = [];
 
   for (const object of jsonObjects) {
     try {
-      const source = await readR2Text(env, object.key);
+      const source = await readR2Text(r2, env, object.key);
       const ticket = JSON.parse(source) as JiraUpdate;
       validateTicket(ticket, object.key);
       await applyJiraUpdate(ticket, env);
-      await moveR2Object(env, object.key, source, doneKey(env, object.key));
+      await moveR2Object(r2, env, object.key, source, doneKey(env, object.key));
       processed.push(object.key);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
@@ -89,7 +98,7 @@ async function runDailyUpdate(env: Env): Promise<RunResult> {
       failed.push({ key: object.key, error: message });
 
       if (env.MOVE_FAILED === "true") {
-        await moveFailedObject(env, object.key, message);
+        await moveFailedObject(r2, env, object.key, message);
       }
     }
   }
@@ -98,57 +107,83 @@ async function runDailyUpdate(env: Env): Promise<RunResult> {
   return { processed, failed };
 }
 
-async function listAllObjects(env: Env, prefix: string): Promise<R2ObjectInfo[]> {
+function r2Client(env: Env): S3Client {
+  return new S3Client({
+    region: "auto",
+    endpoint: `https://${env.R2_ACCOUNT_ID}.r2.cloudflarestorage.com`,
+    forcePathStyle: true,
+    credentials: {
+      accessKeyId: env.R2_ACCESS_KEY_ID,
+      secretAccessKey: env.R2_SECRET_ACCESS_KEY,
+    },
+  });
+}
+
+async function listAllObjects(r2: S3Client, env: Env, prefix: string): Promise<R2ObjectInfo[]> {
   const objects: R2ObjectInfo[] = [];
   let continuationToken: string | undefined;
 
   do {
-    const query: Record<string, string> = {
-      "list-type": "2",
-      prefix,
-    };
-    if (continuationToken) {
-      query["continuation-token"] = continuationToken;
+    const result = await r2.send(new ListObjectsV2Command({
+      Bucket: env.R2_BUCKET_NAME,
+      Prefix: prefix,
+      ContinuationToken: continuationToken,
+    }));
+    for (const object of result.Contents ?? []) {
+      if (object.Key) {
+        objects.push({ key: object.Key });
+      }
     }
-
-    const response = await r2Fetch(env, "GET", "", query);
-    const xml = await response.text();
-    objects.push(...parseListBucketKeys(xml).map((key) => ({ key })));
-    continuationToken = parseXmlTag(xml, "NextContinuationToken");
+    continuationToken = result.NextContinuationToken;
   } while (continuationToken);
 
   return objects;
 }
 
-async function readR2Text(env: Env, key: string): Promise<string> {
-  const response = await r2Fetch(env, "GET", key);
-  return response.text();
+async function readR2Text(r2: S3Client, env: Env, key: string): Promise<string> {
+  const result = await r2.send(new GetObjectCommand({
+    Bucket: env.R2_BUCKET_NAME,
+    Key: key,
+  }));
+  return result.Body?.transformToString() ?? "";
 }
 
-async function moveR2Object(env: Env, sourceKey: string, body: string, destinationKey: string): Promise<void> {
+async function moveR2Object(r2: S3Client, env: Env, sourceKey: string, body: string, destinationKey: string): Promise<void> {
   if (env.DRY_RUN === "true") {
     console.log(`DRY_RUN move ${sourceKey} -> ${destinationKey}`);
     return;
   }
 
-  await r2Fetch(env, "PUT", destinationKey, undefined, body, {
-    "content-type": "application/json; charset=utf-8",
-  });
-  await r2Fetch(env, "DELETE", sourceKey);
+  await r2.send(new PutObjectCommand({
+    Bucket: env.R2_BUCKET_NAME,
+    Key: destinationKey,
+    Body: body,
+    ContentType: "application/json; charset=utf-8",
+  }));
+  await r2.send(new DeleteObjectCommand({
+    Bucket: env.R2_BUCKET_NAME,
+    Key: sourceKey,
+  }));
 }
 
-async function moveFailedObject(env: Env, sourceKey: string, error: string): Promise<void> {
+async function moveFailedObject(r2: S3Client, env: Env, sourceKey: string, error: string): Promise<void> {
   if (env.DRY_RUN === "true") {
     return;
   }
 
   try {
-    const source = await readR2Text(env, sourceKey);
-    await r2Fetch(env, "PUT", failedKey(env, sourceKey), undefined, source, {
-      "content-type": "application/json; charset=utf-8",
-      "x-amz-meta-error": error.slice(0, 512),
-    });
-    await r2Fetch(env, "DELETE", sourceKey);
+    const source = await readR2Text(r2, env, sourceKey);
+    await r2.send(new PutObjectCommand({
+      Bucket: env.R2_BUCKET_NAME,
+      Key: failedKey(env, sourceKey),
+      Body: source,
+      ContentType: "application/json; charset=utf-8",
+      Metadata: { error: error.slice(0, 512) },
+    }));
+    await r2.send(new DeleteObjectCommand({
+      Bucket: env.R2_BUCKET_NAME,
+      Key: sourceKey,
+    }));
   } catch (moveError) {
     console.error(`Failed to move failed object ${sourceKey}`, moveError);
   }
@@ -213,86 +248,6 @@ async function jiraFetch(env: Env, path: string, init: RequestInit): Promise<voi
   if (!response.ok) {
     throw new Error(`Jira API failed ${path}: ${response.status} ${await response.text()}`);
   }
-}
-
-async function r2Fetch(
-  env: Env,
-  method: string,
-  key: string,
-  query: Record<string, string> = {},
-  body = "",
-  extraHeaders: Record<string, string> = {},
-): Promise<Response> {
-  const host = `${env.R2_ACCOUNT_ID}.r2.cloudflarestorage.com`;
-  const path = `/${env.R2_BUCKET_NAME}${key ? `/${key}` : ""}`;
-  const url = new URL(`https://${host}${encodePath(path)}`);
-  for (const [name, value] of Object.entries(query)) {
-    url.searchParams.set(name, value);
-  }
-
-  const payloadHash = await sha256Hex(body);
-  const now = new Date();
-  const amzDate = toAmzDate(now);
-  const dateStamp = amzDate.slice(0, 8);
-  const headers: Record<string, string> = {
-    host,
-    "x-amz-content-sha256": payloadHash,
-    "x-amz-date": amzDate,
-    ...lowercaseKeys(extraHeaders),
-  };
-  headers.authorization = await authorizationHeader(env, method, path, query, headers, payloadHash, dateStamp, amzDate);
-
-  const response = await fetch(url, {
-    method,
-    headers,
-    body: method === "GET" || method === "DELETE" ? undefined : body,
-  });
-
-  if (!response.ok) {
-    throw new Error(`R2 API failed ${method} ${key || "/"}: ${response.status} ${await response.text()}`);
-  }
-
-  return response;
-}
-
-async function authorizationHeader(
-  env: Env,
-  method: string,
-  path: string,
-  query: Record<string, string>,
-  headers: Record<string, string>,
-  payloadHash: string,
-  dateStamp: string,
-  amzDate: string,
-): Promise<string> {
-  const signedHeaders = Object.keys(headers).sort().join(";");
-  const canonicalHeaders = Object.keys(headers)
-    .sort()
-    .map((name) => `${name}:${headers[name].trim()}\n`)
-    .join("");
-  const canonicalRequest = [
-    method,
-    encodePath(path),
-    canonicalQuery(query),
-    canonicalHeaders,
-    signedHeaders,
-    payloadHash,
-  ].join("\n");
-  const credentialScope = `${dateStamp}/auto/s3/aws4_request`;
-  const stringToSign = [
-    "AWS4-HMAC-SHA256",
-    amzDate,
-    credentialScope,
-    await sha256Hex(canonicalRequest),
-  ].join("\n");
-  const signingKey = await getSignatureKey(env.R2_SECRET_ACCESS_KEY, dateStamp);
-  const signature = await hmacHex(signingKey, stringToSign);
-
-  return [
-    `AWS4-HMAC-SHA256 Credential=${env.R2_ACCESS_KEY_ID}/${credentialScope}`,
-    `SignedHeaders=${signedHeaders}`,
-    `Signature=${signature}`,
-  ].join(", ");
 }
 
 function toAtlassianDoc(comment: NonNullable<JiraUpdate["comment"]>): unknown {
@@ -369,73 +324,6 @@ function baseName(key: string): string {
 
 function timestamp(): string {
   return new Date().toISOString().replace(/[:.]/g, "-");
-}
-
-function canonicalQuery(query: Record<string, string>): string {
-  return Object.entries(query)
-    .sort(([a], [b]) => a.localeCompare(b))
-    .map(([key, value]) => `${awsEncode(key)}=${awsEncode(value)}`)
-    .join("&");
-}
-
-function encodePath(path: string): string {
-  return path.split("/").map(awsEncode).join("/");
-}
-
-function awsEncode(value: string): string {
-  return encodeURIComponent(value).replace(/[!'()*]/g, (char) => `%${char.charCodeAt(0).toString(16).toUpperCase()}`);
-}
-
-function lowercaseKeys(headers: Record<string, string>): Record<string, string> {
-  return Object.fromEntries(Object.entries(headers).map(([key, value]) => [key.toLowerCase(), value]));
-}
-
-function toAmzDate(date: Date): string {
-  return date.toISOString().replace(/[:-]|\.\d{3}/g, "");
-}
-
-async function sha256Hex(value: string): Promise<string> {
-  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(value));
-  return toHex(new Uint8Array(digest));
-}
-
-async function hmac(key: ArrayBuffer | Uint8Array, value: string): Promise<Uint8Array> {
-  const cryptoKey = await crypto.subtle.importKey("raw", key, { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
-  const signature = await crypto.subtle.sign("HMAC", cryptoKey, new TextEncoder().encode(value));
-  return new Uint8Array(signature);
-}
-
-async function hmacHex(key: ArrayBuffer | Uint8Array, value: string): Promise<string> {
-  return toHex(await hmac(key, value));
-}
-
-async function getSignatureKey(secret: string, dateStamp: string): Promise<Uint8Array> {
-  const kDate = await hmac(new TextEncoder().encode(`AWS4${secret}`), dateStamp);
-  const kRegion = await hmac(kDate, "auto");
-  const kService = await hmac(kRegion, "s3");
-  return hmac(kService, "aws4_request");
-}
-
-function toHex(bytes: Uint8Array): string {
-  return [...bytes].map((byte) => byte.toString(16).padStart(2, "0")).join("");
-}
-
-function parseListBucketKeys(xml: string): string[] {
-  return [...xml.matchAll(/<Contents>[\s\S]*?<Key>(.*?)<\/Key>[\s\S]*?<\/Contents>/g)].map((match) => decodeXml(match[1]));
-}
-
-function parseXmlTag(xml: string, tag: string): string | undefined {
-  const match = xml.match(new RegExp(`<${tag}>(.*?)</${tag}>`));
-  return match ? decodeXml(match[1]) : undefined;
-}
-
-function decodeXml(value: string): string {
-  return value
-    .replace(/&lt;/g, "<")
-    .replace(/&gt;/g, ">")
-    .replace(/&quot;/g, "\"")
-    .replace(/&apos;/g, "'")
-    .replace(/&amp;/g, "&");
 }
 
 function isAllowedRunRequest(request: Request, env: Env): boolean {

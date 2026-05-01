@@ -1,5 +1,6 @@
 {
 	"name": "jira-daily-updater",
+	"account_id": "2454599fdfa02c70203e0b8b384b43a8",
 	"main": "src/index.ts",
 	"compatibility_date": "2026-05-01",
 	"triggers": {
@@ -8,12 +9,6 @@
 			"0 0 * * *"
 		]
 	},
-	"r2_buckets": [
-		{
-			"binding": "JIRA_UPDATE_BUCKET",
-			"bucket_name": "jira-updates"
-		}
-	],
 	"vars": {
 		"R2_UPDATE_PREFIX": "update/",
 		"R2_DONE_PREFIX": "done/",
@@ -24,3 +19,4 @@
 		"MOVE_FAILED": "true"
 	}
 }
+

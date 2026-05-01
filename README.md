@@ -26,6 +26,26 @@ R2 bucketを作成します。
 npx wrangler r2 bucket create jira-updates
 ```
 
+R2 bindingをCloudflare Dashboardから手動追加します。
+
+```text
+Workers & Pages
+→ jira-daily-updater
+→ Settings
+→ Bindings
+→ Add binding
+→ R2 bucket
+```
+
+設定値:
+
+```text
+Variable name: JIRA_UPDATE_BUCKET
+R2 bucket: jira-updates
+```
+
+この環境ではWranglerからR2 bindingを作ると `code: 10136` が出るため、`wrangler.jsonc` にはR2 bindingを記載していません。Dashboardで追加したbindingを使います。
+
 Jira API tokenをSecretに登録します。
 
 ```powershell

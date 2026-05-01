@@ -1,26 +1,27 @@
 {
-  "name": "jira-daily-updater",
-  "main": "src/index.ts",
-  "compatibility_date": "2026-05-01",
-  "triggers": {
-    // 09:00 JST = 00:00 UTC
-    "crons": [
-      "0 0 * * *"
-    ]
-  },
-  "r2_buckets": [
-    {
-      "binding": "JIRA_UPDATE_BUCKET",
-      "bucket_name": "jira-updates"
-    }
-  ],
-  "vars": {
-    "R2_UPDATE_PREFIX": "update/",
-    "R2_DONE_PREFIX": "done/",
-    "R2_FAILED_PREFIX": "failed/",
-    "JIRA_BASE_URL": "https://ana-x.atlassian.net",
-    "JIRA_EMAIL": "YOUR_JIRA_EMAIL",
-    "JIRA_SPRINT_FIELD": "customfield_10020",
-    "MOVE_FAILED": "true"
-  }
+	"name": "jira-daily-updater",
+	"main": "src/index.ts",
+	"compatibility_date": "2026-05-01",
+	"triggers": {
+		// 09:00 JST = 00:00 UTC
+		"crons": [
+			"0 0 * * *"
+		]
+	},
+	"r2_buckets": [
+		{
+			"binding": "JIRA_UPDATE_BUCKET",
+			"bucket_name": "jira-updates",
+			"remote": true
+		}
+	],
+	"vars": {
+		"R2_UPDATE_PREFIX": "update/",
+		"R2_DONE_PREFIX": "done/",
+		"R2_FAILED_PREFIX": "failed/",
+		"JIRA_BASE_URL": "https://ana-x.atlassian.net",
+		"JIRA_EMAIL": "ki.maeda@ana-x.co.jp",
+		"JIRA_SPRINT_FIELD": "customfield_10020",
+		"MOVE_FAILED": "true"
+	}
 }

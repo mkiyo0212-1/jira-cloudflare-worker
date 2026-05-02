@@ -1,3 +1,5 @@
+import { AwsClient } from "aws4fetch";
+
 export interface Env {
   R2_ACCOUNT_ID: string;
   R2_BUCKET_NAME: string;
@@ -40,10 +42,8 @@ interface R2ObjectInfo {
 
 interface R2Client {
   endpoint: string;
-  host: string;
   bucket: string;
-  accessKeyId: string;
-  secretAccessKey: string;
+  client: AwsClient;
 }
 
 interface RunResult {
@@ -111,10 +111,13 @@ function r2Client(env: Env): R2Client {
   const host = `${env.R2_ACCOUNT_ID}.r2.cloudflarestorage.com`;
   return {
     endpoint: `https://${host}`,
-    host,
     bucket: env.R2_BUCKET_NAME,
-    accessKeyId: env.R2_ACCESS_KEY_ID,
-    secretAccessKey: env.R2_SECRET_ACCESS_KEY,
+    client: new AwsClient({
+      accessKeyId: env.R2_ACCESS_KEY_ID,
+      secretAccessKey: env.R2_SECRET_ACCESS_KEY,
+      service: "s3",
+      region: "auto",
+    }),
   };
 }
 
@@ -187,22 +190,13 @@ async function r2Fetch(
   const path = key ? `/${r2.bucket}/${encodePath(key)}` : `/${r2.bucket}`;
   const canonicalQuery = canonicalQueryString(query);
   const url = `${r2.endpoint}${path}${canonicalQuery ? `?${canonicalQuery}` : ""}`;
-  const payloadHash = await sha256Hex(body);
-  const amzDate = amzTimestamp();
-  const headers: Record<string, string> = {
-    host: r2.host,
-    "x-amz-content-sha256": payloadHash,
-    "x-amz-date": amzDate,
-    ...lowerCaseHeaders(extraHeaders),
-  };
-  const authorization = await authorizationHeader(r2, method, path, canonicalQuery, headers, payloadHash, amzDate);
-  const response = await fetch(url, {
+  const response = await r2.client.fetch(url, {
     method,
-    headers: {
-      ...headers,
-      authorization,
-    },
+    headers: extraHeaders,
     body: method === "GET" || method === "DELETE" ? undefined : body,
+    aws: {
+      allHeaders: true,
+    },
   });
 
   if (!response.ok) {
@@ -210,68 +204,6 @@ async function r2Fetch(
   }
 
   return response;
-}
-
-async function authorizationHeader(
-  r2: R2Client,
-  method: string,
-  canonicalUri: string,
-  canonicalQuery: string,
-  headers: Record<string, string>,
-  payloadHash: string,
-  amzDate: string,
-): Promise<string> {
-  const date = amzDate.slice(0, 8);
-  const signedHeaders = Object.keys(headers).sort().join(";");
-  const canonicalHeaders = Object.keys(headers)
-    .sort()
-    .map((name) => `${name}:${headers[name].trim().replace(/\s+/g, " ")}`)
-    .join("\n");
-  const canonicalRequest = [
-    method,
-    canonicalUri,
-    canonicalQuery,
-    `${canonicalHeaders}\n`,
-    signedHeaders,
-    payloadHash,
-  ].join("\n");
-  const credentialScope = `${date}/auto/s3/aws4_request`;
-  const stringToSign = [
-    "AWS4-HMAC-SHA256",
-    amzDate,
-    credentialScope,
-    await sha256Hex(canonicalRequest),
-  ].join("\n");
-  const signingKey = await getSignatureKey(r2.secretAccessKey, date);
-  const signature = await hmacHex(signingKey, stringToSign);
-
-  return `AWS4-HMAC-SHA256 Credential=${r2.accessKeyId}/${credentialScope}, SignedHeaders=${signedHeaders}, Signature=${signature}`;
-}
-
-async function getSignatureKey(secretAccessKey: string, date: string): Promise<ArrayBuffer> {
-  const dateKey = await hmacBytes(`AWS4${secretAccessKey}`, date);
-  const regionKey = await hmacBytes(dateKey, "auto");
-  const serviceKey = await hmacBytes(regionKey, "s3");
-  return hmacBytes(serviceKey, "aws4_request");
-}
-
-async function hmacBytes(key: string | ArrayBuffer, value: string): Promise<ArrayBuffer> {
-  const cryptoKey = await crypto.subtle.importKey(
-    "raw",
-    typeof key === "string" ? textBytes(key) : key,
-    { name: "HMAC", hash: "SHA-256" },
-    false,
-    ["sign"],
-  );
-  return crypto.subtle.sign("HMAC", cryptoKey, textBytes(value));
-}
-
-async function hmacHex(key: ArrayBuffer, value: string): Promise<string> {
-  return hex(await hmacBytes(key, value));
-}
-
-async function sha256Hex(value: string): Promise<string> {
-  return hex(await crypto.subtle.digest("SHA-256", textBytes(value)));
 }
 
 function canonicalQueryString(query?: Record<string, string>): string {
@@ -292,22 +224,6 @@ function encodePath(key: string): string {
 
 function encodeRfc3986(value: string): string {
   return encodeURIComponent(value).replace(/[!'()*]/g, (char) => `%${char.charCodeAt(0).toString(16).toUpperCase()}`);
-}
-
-function lowerCaseHeaders(headers: Record<string, string>): Record<string, string> {
-  return Object.fromEntries(Object.entries(headers).map(([key, value]) => [key.toLowerCase(), value]));
-}
-
-function amzTimestamp(): string {
-  return new Date().toISOString().replace(/[:-]|\.\d{3}/g, "");
-}
-
-function textBytes(value: string): Uint8Array {
-  return new TextEncoder().encode(value);
-}
-
-function hex(buffer: ArrayBuffer): string {
-  return [...new Uint8Array(buffer)].map((byte) => byte.toString(16).padStart(2, "0")).join("");
 }
 
 function xmlValue(xml: string, tag: string): string | undefined {

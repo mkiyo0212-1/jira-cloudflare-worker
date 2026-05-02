@@ -245,12 +245,7 @@ async function authorizationHeader(
   const signingKey = await getSignatureKey(r2.secretAccessKey, date);
   const signature = await hmacHex(signingKey, stringToSign);
 
-  return [
-    "AWS4-HMAC-SHA256",
-    `Credential=${r2.accessKeyId}/${credentialScope}`,
-    `SignedHeaders=${signedHeaders}`,
-    `Signature=${signature}`,
-  ].join(", ");
+  return `AWS4-HMAC-SHA256 Credential=${r2.accessKeyId}/${credentialScope}, SignedHeaders=${signedHeaders}, Signature=${signature}`;
 }
 
 async function getSignatureKey(secretAccessKey: string, date: string): Promise<ArrayBuffer> {

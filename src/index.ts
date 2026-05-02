@@ -1,5 +1,10 @@
+import { AwsClient } from "aws4fetch";
+
 export interface Env {
-  JIRA_UPDATE_BUCKET: R2Bucket;
+  R2_ACCOUNT_ID: string;
+  R2_BUCKET_NAME: string;
+  R2_ACCESS_KEY_ID: string;
+  R2_SECRET_ACCESS_KEY: string;
   R2_UPDATE_PREFIX?: string;
   R2_DONE_PREFIX?: string;
   R2_FAILED_PREFIX?: string;
@@ -7,7 +12,6 @@ export interface Env {
   JIRA_EMAIL: string;
   JIRA_API_TOKEN: string;
   JIRA_SPRINT_FIELD?: string;
-  ALLOWED_RUN_IPS?: string;
   MOVE_FAILED?: string;
   DRY_RUN?: string;
 }
@@ -35,6 +39,12 @@ interface R2ObjectInfo {
   key: string;
 }
 
+interface R2Client {
+  endpoint: string;
+  bucket: string;
+  client: AwsClient;
+}
+
 interface RunResult {
   processed: string[];
   failed: Array<{ key: string; error: string }>;
@@ -50,9 +60,6 @@ export default {
     if (url.pathname !== "/run") {
       return new Response("OK");
     }
-    if (!isAllowedRunRequest(request, env)) {
-      return Response.json({ error: "Forbidden" }, { status: 403 });
-    }
 
     try {
       const result = await runDailyUpdate(env);
@@ -66,19 +73,20 @@ export default {
 };
 
 async function runDailyUpdate(env: Env): Promise<RunResult> {
+  const r2 = r2Client(env);
   const prefix = normalizePrefix(env.R2_UPDATE_PREFIX || "update/");
-  const objects = await listAllObjects(env.JIRA_UPDATE_BUCKET, prefix);
+  const objects = await listAllObjects(r2, env, prefix);
   const jsonObjects = objects.filter((object) => object.key.endsWith(".json"));
   const processed: string[] = [];
   const failed: Array<{ key: string; error: string }> = [];
 
   for (const object of jsonObjects) {
     try {
-      const source = await readR2Text(env.JIRA_UPDATE_BUCKET, object.key);
+      const source = await readR2Text(r2, env, object.key);
       const ticket = JSON.parse(source) as JiraUpdate;
       validateTicket(ticket, object.key);
       await applyJiraUpdate(ticket, env);
-      await moveR2Object(env.JIRA_UPDATE_BUCKET, env, object.key, source, doneKey(env, object.key));
+      await moveR2Object(r2, env, object.key, source, doneKey(env, object.key));
       processed.push(object.key);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
@@ -86,7 +94,7 @@ async function runDailyUpdate(env: Env): Promise<RunResult> {
       failed.push({ key: object.key, error: message });
 
       if (env.MOVE_FAILED === "true") {
-        await moveFailedObject(env.JIRA_UPDATE_BUCKET, env, object.key, message);
+        await moveFailedObject(r2, env, object.key, message);
       }
     }
   }
@@ -95,65 +103,145 @@ async function runDailyUpdate(env: Env): Promise<RunResult> {
   return { processed, failed };
 }
 
-async function listAllObjects(bucket: R2Bucket, prefix: string): Promise<R2ObjectInfo[]> {
+function r2Client(env: Env): R2Client {
+  const host = `${env.R2_ACCOUNT_ID}.r2.cloudflarestorage.com`;
+  return {
+    endpoint: `https://${host}`,
+    bucket: env.R2_BUCKET_NAME,
+    client: new AwsClient({
+      accessKeyId: env.R2_ACCESS_KEY_ID,
+      secretAccessKey: env.R2_SECRET_ACCESS_KEY,
+      service: "s3",
+      region: "auto",
+    }),
+  };
+}
+
+async function listAllObjects(r2: R2Client, env: Env, prefix: string): Promise<R2ObjectInfo[]> {
   const objects: R2ObjectInfo[] = [];
-  let cursor: string | undefined;
+  let continuationToken: string | undefined;
 
   do {
-    const result = await bucket.list({
+    const query: Record<string, string> = {
+      "list-type": "2",
       prefix,
-      cursor,
-    });
-    for (const object of result.objects) {
-      objects.push({ key: object.key });
+    };
+    if (continuationToken) {
+      query["continuation-token"] = continuationToken;
     }
-    cursor = result.truncated ? result.cursor : undefined;
-  } while (cursor);
+
+    const response = await r2Fetch(r2, "GET", undefined, query);
+    const xml = await response.text();
+    for (const key of xmlMatches(xml, "Key")) {
+      objects.push({ key });
+    }
+    continuationToken = xmlValue(xml, "NextContinuationToken");
+  } while (continuationToken);
 
   return objects;
 }
 
-async function readR2Text(bucket: R2Bucket, key: string): Promise<string> {
-  const object = await bucket.get(key);
-  if (!object) {
-    throw new Error(`R2 object not found: ${key}`);
-  }
-  return object.text();
+async function readR2Text(r2: R2Client, _env: Env, key: string): Promise<string> {
+  const response = await r2Fetch(r2, "GET", key);
+  return response.text();
 }
 
-async function moveR2Object(bucket: R2Bucket, env: Env, sourceKey: string, body: string, destinationKey: string): Promise<void> {
+async function moveR2Object(r2: R2Client, env: Env, sourceKey: string, body: string, destinationKey: string): Promise<void> {
   if (env.DRY_RUN === "true") {
     console.log(`DRY_RUN move ${sourceKey} -> ${destinationKey}`);
     return;
   }
 
-  await bucket.put(destinationKey, body, {
-    httpMetadata: {
-      contentType: "application/json; charset=utf-8",
-    },
+  await r2Fetch(r2, "PUT", destinationKey, undefined, body, {
+    "content-type": "application/json; charset=utf-8",
   });
-  await bucket.delete(sourceKey);
+  await r2Fetch(r2, "DELETE", sourceKey);
 }
 
-async function moveFailedObject(bucket: R2Bucket, env: Env, sourceKey: string, error: string): Promise<void> {
+async function moveFailedObject(r2: R2Client, env: Env, sourceKey: string, error: string): Promise<void> {
   if (env.DRY_RUN === "true") {
     return;
   }
 
   try {
-    const source = await readR2Text(bucket, sourceKey);
-    await bucket.put(failedKey(env, sourceKey), source, {
-      httpMetadata: {
-        contentType: "application/json; charset=utf-8",
-      },
-      customMetadata: {
-        error: error.slice(0, 512),
-      },
+    const source = await readR2Text(r2, env, sourceKey);
+    await r2Fetch(r2, "PUT", failedKey(env, sourceKey), undefined, source, {
+      "content-type": "application/json; charset=utf-8",
+      "x-amz-meta-error": error.slice(0, 512),
     });
-    await bucket.delete(sourceKey);
+    await r2Fetch(r2, "DELETE", sourceKey);
   } catch (moveError) {
     console.error(`Failed to move failed object ${sourceKey}`, moveError);
   }
+}
+
+async function r2Fetch(
+  r2: R2Client,
+  method: string,
+  key?: string,
+  query?: Record<string, string>,
+  body = "",
+  extraHeaders: Record<string, string> = {},
+): Promise<Response> {
+  const path = key ? `/${r2.bucket}/${encodePath(key)}` : `/${r2.bucket}`;
+  const canonicalQuery = canonicalQueryString(query);
+  const url = `${r2.endpoint}${path}${canonicalQuery ? `?${canonicalQuery}` : ""}`;
+  const response = await r2.client.fetch(url, {
+    method,
+    headers: extraHeaders,
+    body: method === "GET" || method === "DELETE" ? undefined : body,
+    aws: {
+      allHeaders: true,
+    },
+  });
+
+  if (!response.ok) {
+    throw new Error(`R2 API failed ${method} ${path}: ${response.status} ${await response.text()}`);
+  }
+
+  return response;
+}
+
+function canonicalQueryString(query?: Record<string, string>): string {
+  if (!query) {
+    return "";
+  }
+
+  return Object.entries(query)
+    .map(([key, value]) => [encodeRfc3986(key), encodeRfc3986(value)])
+    .sort(([leftKey, leftValue], [rightKey, rightValue]) => leftKey.localeCompare(rightKey) || leftValue.localeCompare(rightValue))
+    .map(([key, value]) => `${key}=${value}`)
+    .join("&");
+}
+
+function encodePath(key: string): string {
+  return key.split("/").map(encodeRfc3986).join("/");
+}
+
+function encodeRfc3986(value: string): string {
+  return encodeURIComponent(value).replace(/[!'()*]/g, (char) => `%${char.charCodeAt(0).toString(16).toUpperCase()}`);
+}
+
+function xmlValue(xml: string, tag: string): string | undefined {
+  return xmlMatches(xml, tag)[0];
+}
+
+function xmlMatches(xml: string, tag: string): string[] {
+  const matches: string[] = [];
+  const pattern = new RegExp(`<${tag}>([\\s\\S]*?)</${tag}>`, "g");
+  for (const match of xml.matchAll(pattern)) {
+    matches.push(decodeXml(match[1]));
+  }
+  return matches;
+}
+
+function decodeXml(value: string): string {
+  return value
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&quot;/g, "\"")
+    .replace(/&apos;/g, "'")
+    .replace(/&amp;/g, "&");
 }
 
 async function applyJiraUpdate(ticket: JiraUpdate, env: Env): Promise<void> {
@@ -293,16 +381,3 @@ function timestamp(): string {
   return new Date().toISOString().replace(/[:.]/g, "-");
 }
 
-function isAllowedRunRequest(request: Request, env: Env): boolean {
-  const allowedIps = (env.ALLOWED_RUN_IPS || "")
-    .split(",")
-    .map((ip) => ip.trim())
-    .filter(Boolean);
-
-  if (allowedIps.length === 0) {
-    return false;
-  }
-
-  const clientIp = request.headers.get("CF-Connecting-IP");
-  return Boolean(clientIp && allowedIps.includes(clientIp));
-}

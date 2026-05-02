@@ -3,20 +3,15 @@
 	"account_id": "2454599fdfa02c70203e0b8b384b43a8",
 	"main": "src/index.ts",
 	"compatibility_date": "2026-05-01",
-	"r2_buckets": [
-		{
-			"binding": "JIRA_UPDATE_BUCKET",
-			"bucket_name": "jira-updates"
-		}
-	],
 	"vars": {
+		"R2_ACCOUNT_ID": "2454599fdfa02c70203e0b8b384b43a8",
+		"R2_BUCKET_NAME": "jira-updates",
 		"R2_UPDATE_PREFIX": "update/",
 		"R2_DONE_PREFIX": "done/",
 		"R2_FAILED_PREFIX": "failed/",
 		"JIRA_BASE_URL": "https://ana-x.atlassian.net",
 		"JIRA_EMAIL": "ki.maeda@ana-x.co.jp",
 		"JIRA_SPRINT_FIELD": "customfield_10020",
-		"ALLOWED_RUN_IPS": "153.124.178.193,240d:1a:9f4:8300::3",
 		"MOVE_FAILED": "true"
 	}
 }
